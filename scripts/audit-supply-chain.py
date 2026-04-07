@@ -38,6 +38,7 @@ DEFAULT_MODEL = "claude-sonnet-4-20250514"
 ANTHROPIC_API_VERSION = "2023-06-01"
 USER_AGENT = "uv-lock-supply-chain-audit/1.0 (github.com/originsec/uv-lock-supply-chain-claude)"
 DOWNLOAD_DELAY = 0.25  # courtesy delay between PyPI downloads (seconds)
+MAX_DIFF_CHARS = 400_000  # ~100K tokens; truncate oversized diffs to avoid API limits
 MAX_COMMENT_CHARS = 60_000  # GitHub comment limit is 65536; leave headroom
 SUPPRESS_MARKER = "[supply-chain-audit-ok]"
 
@@ -412,6 +413,13 @@ def call_claude(
     model: str,
 ) -> dict:
     """Call Claude to audit a package diff. Returns the parsed verdict dict."""
+    if len(diff_text) > MAX_DIFF_CHARS:
+        truncated_note = (
+            f"\n\n... (truncated from {len(diff_text):,} to {MAX_DIFF_CHARS:,} chars — "
+            f"review full sdist manually for complete coverage)"
+        )
+        diff_text = diff_text[:MAX_DIFF_CHARS] + truncated_note
+
     if change_type == "added":
         user_msg = (
             f'Analyze the following contents for the newly added Python package dependency "{name}" '
@@ -449,9 +457,11 @@ def call_claude(
     req = urllib.request.Request(CLAUDE_API_URL, data=body, headers=headers, method="POST")
 
     last_err = None
-    for attempt in range(2):
+    for attempt in range(4):
         if attempt > 0:
-            time.sleep(5)
+            delay = 10 * (2 ** (attempt - 1))  # 10s, 20s, 40s
+            print(f"::warning::Retry {attempt}/3 after {delay}s...", file=sys.stderr)
+            time.sleep(delay)
         try:
             with urllib.request.urlopen(req, timeout=300) as resp:
                 result = json.loads(resp.read())
