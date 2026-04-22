@@ -500,6 +500,12 @@ def call_claude(
             return parsed
         except json.JSONDecodeError as e:
             last_err = f"Invalid JSON from Claude: {e}\nRaw response: {text[:500]}"
+        except urllib.error.HTTPError as e:
+            try:
+                body = e.read().decode("utf-8", errors="replace")
+            except Exception:
+                body = "<unreadable>"
+            last_err = f"API request failed: {e} — {body[:500]}"
         except (urllib.error.URLError, OSError) as e:
             last_err = f"API request failed: {e}"
 
