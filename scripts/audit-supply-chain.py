@@ -147,6 +147,25 @@ def parse_version(v: str) -> tuple[int, ...]:
 # Change detection
 # ---------------------------------------------------------------------------
 
+LOCKFILE_RE = re.compile(r"(?:^|/)uv\.lock$")
+
+
+def discover_changed_lockfiles(base_ref: str) -> list[str]:
+    """Return every uv.lock path (root or nested) changed since base_ref."""
+    try:
+        output = subprocess.check_output(
+            ["git", "diff", "--name-only", f"{base_ref}...HEAD"],
+            text=True,
+            stderr=subprocess.PIPE,
+        )
+    except subprocess.CalledProcessError as e:
+        print(
+            f"::warning::git diff against {base_ref} failed: {e.stderr.strip()}",
+            file=sys.stderr,
+        )
+        return []
+    return [line for line in output.splitlines() if LOCKFILE_RE.search(line)]
+
 
 @dataclass
 class Change:
@@ -475,7 +494,10 @@ def call_claude(
                 text = re.sub(r"^```\w*\n?", "", text)
                 text = re.sub(r"\n?```$", "", text)
                 text = text.strip()
-            return json.loads(text)
+            # Use raw_decode so trailing commentary after the JSON object
+            # doesn't cause json.loads to raise "Extra data".
+            parsed, _ = json.JSONDecoder().raw_decode(text)
+            return parsed
         except json.JSONDecodeError as e:
             last_err = f"Invalid JSON from Claude: {e}\nRaw response: {text[:500]}"
         except (urllib.error.URLError, OSError) as e:
@@ -618,35 +640,57 @@ def main() -> int:
         except (OSError, json.JSONDecodeError):
             pass
 
-    # Read base and head uv.lock
-    try:
-        base_text = subprocess.check_output(
-            ["git", "show", f"{base_ref}:uv.lock"],
-            text=True,
-            stderr=subprocess.PIPE,
-        )
-    except subprocess.CalledProcessError:
-        print(f"::warning::Could not read uv.lock from {base_ref}, treating all deps as new.",
-              file=sys.stderr)
-        base_text = ""
+    lockfiles = discover_changed_lockfiles(base_ref)
+    if not lockfiles:
+        print("No uv.lock changes detected.", file=sys.stderr)
+        return 0
 
-    try:
-        with open("uv.lock") as f:
-            head_text = f.read()
-    except OSError as e:
-        print(f"::error::Could not read uv.lock: {e}", file=sys.stderr)
-        return 1
+    print(
+        f"Auditing {len(lockfiles)} changed uv.lock file(s): {', '.join(lockfiles)}",
+        file=sys.stderr,
+    )
 
-    base_pkgs = parse_lockfile(base_text)
-    head_pkgs = parse_lockfile(head_text)
-    changes = compute_changes(base_pkgs, head_pkgs)
+    # Merge changes across all lockfiles, deduping by (name, old_version, new_version).
+    # A monorepo may have the same package upgrade in multiple lockfiles — the source
+    # diff is identical, so auditing once is sufficient.
+    merged: dict[tuple[str, str | None, str | None], Change] = {}
+    for lockfile in lockfiles:
+        try:
+            base_text = subprocess.check_output(
+                ["git", "show", f"{base_ref}:{lockfile}"],
+                text=True,
+                stderr=subprocess.PIPE,
+            )
+        except subprocess.CalledProcessError:
+            print(
+                f"::warning::Could not read {lockfile} from {base_ref}, "
+                f"treating all deps as new.",
+                file=sys.stderr,
+            )
+            base_text = ""
+
+        try:
+            with open(lockfile) as f:
+                head_text = f.read()
+        except OSError as e:
+            print(f"::warning::Could not read {lockfile}: {e}", file=sys.stderr)
+            continue
+
+        base_pkgs = parse_lockfile(base_text)
+        head_pkgs = parse_lockfile(head_text)
+        for change in compute_changes(base_pkgs, head_pkgs):
+            merged.setdefault(
+                (change.name, change.old_version, change.new_version), change
+            )
+
+    changes = sorted(merged.values(), key=lambda c: c.name)
 
     if not changes:
         print("No registry dependency changes detected.", file=sys.stderr)
         return 0
 
     print(
-        f"Found {len(changes)} dependency change(s) to audit.",
+        f"Found {len(changes)} unique dependency change(s) to audit.",
         file=sys.stderr,
     )
 
