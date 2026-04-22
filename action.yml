@@ -43,6 +43,16 @@ runs:
           echo "No uv.lock changes detected, skipping audit."
         fi
 
+    - name: Restore verdict cache
+      if: steps.changed.outputs.lockfile_changed == 'true'
+      uses: actions/cache@v4
+      with:
+        # Cache entries are content-addressed by sdist URL, so they are immutable.
+        path: ~/.cache/uv-lock-supply-chain-audit
+        key: ${{ runner.os }}-uv-audit-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: |
+          ${{ runner.os }}-uv-audit-
+
     - name: Run supply chain audit
       id: audit
       if: steps.changed.outputs.lockfile_changed == 'true'
@@ -50,15 +60,19 @@ runs:
       env:
         ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
         AUDIT_MODEL: ${{ inputs.model }}
+        AUDIT_CACHE_FILE: ~/.cache/uv-lock-supply-chain-audit/verdicts.json
       run: |
         # Script writes the PR comment to stdout and logs to stderr.
         comment=$(python3 "${{ github.action_path }}/scripts/audit-supply-chain.py" "${{ steps.base.outputs.ref }}")
         exit_code=$?
         if [ -n "$comment" ]; then
+          # Random heredoc delimiter prevents an attacker-controlled line in
+          # $comment from closing the heredoc early and injecting GITHUB_OUTPUT keys.
+          delim="AUDIT_EOF_$(openssl rand -hex 16)"
           {
-            echo 'body<<AUDIT_EOF'
-            echo "$comment"
-            echo AUDIT_EOF
+            printf 'body<<%s\n' "$delim"
+            printf '%s\n' "$comment"
+            printf '%s\n' "$delim"
           } >> "$GITHUB_OUTPUT"
         fi
         exit $exit_code
