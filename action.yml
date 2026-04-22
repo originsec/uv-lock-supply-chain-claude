@@ -36,7 +36,8 @@ runs:
       id: changed
       shell: bash
       run: |
-        if git diff --name-only ${{ steps.base.outputs.ref }}...HEAD | grep -q '^uv.lock$'; then
+        # Matches uv.lock at any depth (root or nested, e.g. backend/uv.lock)
+        if git diff --name-only ${{ steps.base.outputs.ref }}...HEAD | grep -Eq '(^|/)uv\.lock$'; then
           echo "lockfile_changed=true" >> "$GITHUB_OUTPUT"
         else
           echo "No uv.lock changes detected, skipping audit."

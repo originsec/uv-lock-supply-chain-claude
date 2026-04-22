@@ -2,7 +2,7 @@
 
 A GitHub Action that audits uv.lock dependency changes for supply chain attacks using Claude.
 
-When a PR modifies `uv.lock`, this action:
+When a PR modifies any `uv.lock` (root or nested, e.g. `backend/uv.lock`), this action:
 
 1. Diffs the lockfile to find every added, upgraded, or downgraded registry dependency
 2. Downloads the old and new sdist tarballs from PyPI (URLs are embedded in uv.lock)
@@ -36,7 +36,7 @@ name: Supply Chain Audit
 on:
   pull_request:
     paths:
-      - "uv.lock"
+      - "**/uv.lock"
 
 permissions:
   contents: read

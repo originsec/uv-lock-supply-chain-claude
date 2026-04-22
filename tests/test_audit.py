@@ -28,6 +28,67 @@ collect_files = audit.collect_files
 diff_packages = audit.diff_packages
 format_comment = audit.format_comment
 extract_sdist = audit.extract_sdist
+LOCKFILE_RE = audit.LOCKFILE_RE
+
+
+# ---------------------------------------------------------------------------
+# LOCKFILE_RE (nested uv.lock discovery)
+# ---------------------------------------------------------------------------
+
+
+class TestLockfileRegex:
+    def test_matches_root(self):
+        assert LOCKFILE_RE.search("uv.lock")
+
+    def test_matches_nested(self):
+        assert LOCKFILE_RE.search("backend/uv.lock")
+
+    def test_matches_deeply_nested(self):
+        assert LOCKFILE_RE.search("services/api/subdir/uv.lock")
+
+    def test_rejects_pyproject(self):
+        assert not LOCKFILE_RE.search("pyproject.toml")
+        assert not LOCKFILE_RE.search("backend/pyproject.toml")
+
+    def test_rejects_similar_suffix(self):
+        assert not LOCKFILE_RE.search("myuv.lock")
+        assert not LOCKFILE_RE.search("uv.lock.bak")
+
+
+# ---------------------------------------------------------------------------
+# Claude response parsing — tolerates trailing commentary after JSON
+# ---------------------------------------------------------------------------
+
+
+class TestClaudeResponseParsing:
+    def _parse(self, raw: str) -> dict:
+        text = raw.strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```\w*\n?", "", text)
+            text = re.sub(r"\n?```$", "", text)
+            text = text.strip()
+        parsed, _ = json.JSONDecoder().raw_decode(text)
+        return parsed
+
+    def test_plain_json(self):
+        raw = '{"risk": "none", "summary": "OK", "findings": []}'
+        assert self._parse(raw)["risk"] == "none"
+
+    def test_json_with_trailing_commentary(self):
+        raw = (
+            '{"risk": "none", "summary": "Routine.", "findings": []}\n\n'
+            "The diff shows a standard version increment with no concerns."
+        )
+        result = self._parse(raw)
+        assert result["risk"] == "none"
+        assert result["summary"] == "Routine."
+
+    def test_fenced_json_with_trailing_commentary(self):
+        raw = (
+            '```json\n{"risk": "low", "summary": "Minor.", "findings": []}\n```\n'
+            "Additional notes from the model."
+        )
+        assert self._parse(raw)["risk"] == "low"
 
 
 # ---------------------------------------------------------------------------
